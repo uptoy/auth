@@ -1,44 +1,49 @@
+declare module 'express-session' {
+  interface SessionData {
+    user: string
+  }
+}
 import express from 'express';
-import session from 'express-session';
-import RedisStore from 'connect-redis';
-import { createClient } from 'redis'; // v4以降のAPI
 import { exampleRouter } from './routes/example';
 import dotenv from 'dotenv';
+import jwt from 'jsonwebtoken';
 import { todoRouter } from './routes/todo';
+import { sessionMiddleware } from './sessionMiddleware';
+// import { authMiddleware } from './authMiddleware';
+import { db } from './db';
+
 
 dotenv.config();
-
 const app = express();
-
-// Redisクライアントの作成
-const redisClient = createClient({
-  url: `redis://${process.env.REDIS_HOST || '127.0.0.1'}:${process.env.REDIS_PORT || 6379}`,
-});
-
-redisClient.connect().catch(console.error);
-
-redisClient.on('error', (err) => console.error('Redis Client Error', err));
-
-// RedisStoreのインスタンスを作成 (newを使わない)
-const redisStore = new (RedisStore(session))({
-  client: redisClient,
-});
-
 app.use(express.json());
+app.use(sessionMiddleware);
+// ミドルウェアでトークンを確認
+app.use((req, res, next) => {
+  const token = req.cookies['auth0_token']; // クライアントサイドから送信されたトークンを取得
 
-app.use(
-  session({
-    store: redisStore, // RedisStoreのインスタンスを指定
-    secret: 'your-secret-key',
-    resave: false,
-    saveUninitialized: false,
-    cookie: { secure: false, sameSite: 'lax' },
-  })
-);
-
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, process.env.AUTH0_SECRET as string);
+      req.session.user = decoded; // ユーザー情報をセッションに保存
+    } catch (error) {
+      return res.status(401).json({ message: 'Invalid token' });
+    }
+  }
+  next();
+});
 // Routes
 app.use('/api/todos', todoRouter);
 app.use('/api/example', exampleRouter);
+app.get('/protected', (req, res) => {
+  if (!req.session.user) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  res.json({ message: `Welcome ${req.session.user.name}` });
+});
+app.get('/users', async (req, res) => {
+  const users = await db('users').select('*');
+  res.json(users);
+});
 
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => {
